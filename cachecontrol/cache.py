@@ -37,3 +37,28 @@ class DictCache(BaseCache):
         with self.lock:
             if key in self.data:
                 self.data.pop(key)
+
+
+CACHE_KEY_DELIMTER = ';'
+
+
+def keymaker(prefix, suffix=''):
+    """Given a prefix and an optional suffix, create a cache key
+
+    The purpose of the suffix and DELIMTER is to allow two kinds of cache key
+    - public level keys that are available to all users and user level keys
+    where the suffix is used to identify said user
+    """
+    fmt = "{}{}{}" if suffix else "{}"
+    return fmt.format(prefix, CACHE_KEY_DELIMTER, suffix)
+
+
+def keybreaker(key):
+    """Given a cache key, return the prefix and suffix used to create it"""
+    split = key.split(CACHE_KEY_DELIMTER)
+    prefix = split[0]
+    try:
+        suffix = split[1]
+    except IndexError:
+        suffix = ''
+    return prefix, suffix

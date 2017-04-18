@@ -107,13 +107,14 @@ class TestCacheControllerResponse(object):
         cache = DictCache({self.url: resp})
         cc = CacheController(cache)
 
-        cache_url = cc.cache_url(self.url)
+        request = type('Request', (object,), {'headers': {}, 'url': self.url})()
+        cache_key = cc.cache_key(request)
 
         resp = self.resp({'cache-control': 'no-store'})
-        assert cc.cache.get(cache_url)
+        assert cc.cache.get(cache_key)
 
         cc.cache_response(self.req(), resp)
-        assert not cc.cache.get(cache_url)
+        assert not cc.cache.get(cache_key)
 
     def test_update_cached_response_with_valid_headers(self):
         cached_resp = Mock(headers={'ETag': 'jfd9094r808', 'Content-Length': 100})
@@ -130,7 +131,9 @@ class TestCacheControllerResponse(object):
         cc.serializer.loads.return_value = cached_resp
         cc.cache_url = Mock(return_value='http://foo.com')
 
-        result = cc.update_cached_response(Mock(), resp)
+        req_headers = {}
+        request = type('Request', (object,), {'headers': req_headers, 'url': 'http://example.com'})()
+        result = cc.update_cached_response(request, resp)
 
         assert result.headers['ETag'] == resp.headers['ETag']
         assert result.headers['Content-Length'] == 100
@@ -225,3 +228,42 @@ class TestCacheControlRequest(object):
         self.c.cache = DictCache({self.url: resp})
 
         assert not self.req({})
+
+    def test_cached_request_with_0_max_age_not_returned(self):
+        self.c.cache = DictCache({self.url: 1000000})
+        assert self.req({'cache-control': 'max-age=0'}) is False
+
+    def test_cached_request_without_date_and_etags_is_evicted(self):
+        resp = Mock(headers={'xx': 'this-value-is-unimportant'})
+        self.c.cache = DictCache({self.url: resp})
+        assert self.c.cache.get(self.url) is not None
+        assert self.req({}) is False
+        assert self.c.cache.get(self.url) is None
+
+
+class TestCacheVaryByAuthorization(object):
+    url = 'http://foo.com/bar'
+
+    def setup(self):
+        self.c = CacheController(
+            DictCache(),
+            serializer=NullSerializer(),
+        )
+
+    def req(self, headers):
+        mock_request = Mock(url=self.url, headers=headers)
+        return self.c.cached_request(mock_request)
+
+    def test_uses_auth_token_to_lookup_response(self):
+        req_headers = {'Authorization': 'Bearer some-token'}
+        resp_headers = {'Vary': 'Authorization'}
+
+        request = type('Request', (object,), {'headers': req_headers, 'url': self.url})()
+        expected_key = CacheController.cache_key(request)
+        response = Mock(headers=resp_headers, status=301)
+
+        # we set the status to 301 so that it is immediately returned without performing any etag/date checks to see if
+        # cache eviction is required
+        self.c.cache = DictCache({expected_key: response})
+
+        assert self.req(headers=req_headers) == response

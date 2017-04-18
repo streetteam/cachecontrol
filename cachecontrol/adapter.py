@@ -9,7 +9,7 @@ from .filewrapper import CallbackFileWrapper
 
 
 class CacheControlAdapter(HTTPAdapter):
-    invalidating_methods = set(['PUT', 'DELETE'])
+    invalidating_methods = set(['PUT', 'PATCH', 'DELETE'])
 
     def __init__(self, cache=None,
                  cache_etags=True,
@@ -117,8 +117,8 @@ class CacheControlAdapter(HTTPAdapter):
 
         # See if we should invalidate the cache.
         if request.method in self.invalidating_methods and resp.ok:
-            cache_url = self.controller.cache_url(request.url)
-            self.cache.delete(cache_url)
+            cache_key = self.controller.cache_key(request)
+            self.cache.delete(cache_key)
 
         # Give the request a from_cache attr to let people use it
         resp.from_cache = from_cache

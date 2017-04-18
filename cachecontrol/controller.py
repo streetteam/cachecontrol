@@ -10,13 +10,21 @@ from email.utils import parsedate_tz
 
 from requests.structures import CaseInsensitiveDict
 
-from .cache import DictCache
+from .cache import DictCache, keymaker
 from .serialize import Serializer
 
 
 logger = logging.getLogger(__name__)
 
 URI = re.compile(r"^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?")
+
+
+def value_as_int(di, key, default=0):
+    try:
+        value = int(di.get(key, default))
+    except ValueError:
+        value = default
+    return value
 
 
 def parse_uri(uri):
@@ -61,16 +69,14 @@ class CacheController(object):
     @classmethod
     def _authorization_digest(cls, authorization_header):
         """Creates a hash digest of a request's authorization header.
-
-        Note that the
         """
         if not authorization_header:
             return ''
-        return hashlib.sha224(authorization_header).digest()
+        return hashlib.sha224(authorization_header.encode('utf-8')).hexdigest()
 
     @classmethod
     def cache_key(cls, request):
-        """Create a a cache_key from a url and request headers.
+        """Create a cache_key from a url and request headers.
 
         Requests are generally stored by their URL.
         For requests that have an Authorization header, we add a hash of that header to the cache key.
@@ -78,7 +84,7 @@ class CacheController(object):
         """
         normalized_url = cls._urlnorm(request.url)
         authorization_hash = cls._authorization_digest(request.headers.get('Authorization'))
-        return "{};{}".format(normalized_url, authorization_hash)
+        return keymaker(normalized_url, authorization_hash)
 
     def parse_cache_control(self, headers):
         """
@@ -109,8 +115,6 @@ class CacheController(object):
         Return a cached response if it exists in the cache, otherwise
         return False.
         """
-        cache_key = self.cache_key(request)
-        logger.debug('Looking up "%s" in the cache', cache_key)
         cc = self.parse_cache_control(request.headers)
 
         # Bail out if the request insists on fresh data
@@ -118,11 +122,13 @@ class CacheController(object):
             logger.debug('Request header has "no-cache", cache bypassed')
             return False
 
-        if 'max-age' in cc and cc['max-age'] == 0:
+        if value_as_int(cc, 'max-age', default=-1) == 0:
             logger.debug('Request header has "max_age" as 0, cache bypassed')
             return False
 
         # Request allows serving from the cache, let's see if we find something
+        cache_key = self.cache_key(request)
+        logger.debug('Looking up "%s" in the cache', cache_key)
         cache_data = self.cache.get(cache_key)
         if cache_data is None:
             logger.debug('No cache entry available')
@@ -175,8 +181,8 @@ class CacheController(object):
         freshness_lifetime = 0
 
         # Check the max-age pragma in the cache control header
-        if 'max-age' in resp_cc and resp_cc['max-age'].isdigit():
-            freshness_lifetime = int(resp_cc['max-age'])
+        if 'max-age' in resp_cc:
+            freshness_lifetime = value_as_int(resp_cc, 'max-age')
             logger.debug('Freshness lifetime from max-age: %i',
                          freshness_lifetime)
 
@@ -192,20 +198,13 @@ class CacheController(object):
         # Determine if we are setting freshness limit in the
         # request. Note, this overrides what was in the response.
         if 'max-age' in cc:
-            try:
-                freshness_lifetime = int(cc['max-age'])
-                logger.debug('Freshness lifetime from request max-age: %i',
-                             freshness_lifetime)
-            except ValueError:
-                freshness_lifetime = 0
+            freshness_lifetime = value_as_int(cc, 'max-age')
+            logger.debug('Freshness lifetime from request max-age: %i',
+                         freshness_lifetime)
 
         if 'min-fresh' in cc:
-            try:
-                min_fresh = int(cc['min-fresh'])
-            except ValueError:
-                min_fresh = 0
             # adjust our current age by our min fresh
-            current_age += min_fresh
+            current_age += value_as_int(cc, 'min-fresh')
             logger.debug('Adjusted current age from min-fresh: %i',
                          current_age)
 
@@ -273,7 +272,6 @@ class CacheController(object):
 
         cc_req = self.parse_cache_control(request.headers)
         cc = self.parse_cache_control(response_headers)
-
         cache_key = self.cache_key(request)
         logger.debug('Updating cache with response from "%s"', cache_key)
 
@@ -311,13 +309,13 @@ class CacheController(object):
         # the cache.
         elif 'date' in response_headers:
             # cache when there is a max-age > 0
-            if cc and cc.get('max-age'):
-                if cc['max-age'].isdigit() and int(cc['max-age']) > 0:
-                    logger.debug('Caching b/c date exists and max-age > 0')
-                    self.cache.set(
-                        cache_key,
-                        self.serializer.dumps(request, response, body=body),
-                    )
+            max_age = value_as_int(cc, 'max-age')
+            if max_age > 0:
+                logger.debug('Caching b/c date exists and max-age > 0')
+                self.cache.set(
+                    cache_key,
+                    self.serializer.dumps(request, response, body=body),
+                )
 
             # If the request can expire, it means we should cache it
             # in the meantime.
@@ -337,10 +335,10 @@ class CacheController(object):
         gotten a 304 as the response.
         """
         cache_key = self.cache_key(request)
-
+        cache_data = self.cache.get(cache_key)
         cached_response = self.serializer.loads(
             request,
-            self.cache.get(cache_key)
+            cache_data
         )
 
         if not cached_response:
