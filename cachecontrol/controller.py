@@ -1,6 +1,7 @@
 """
 The httplib2 algorithms ported for use with requests.
 """
+import hashlib
 import logging
 import re
 import calendar
@@ -58,8 +59,26 @@ class CacheController(object):
         return defrag_uri
 
     @classmethod
-    def cache_url(cls, uri):
-        return cls._urlnorm(uri)
+    def _authorization_digest(cls, authorization_header):
+        """Creates a hash digest of a request's authorization header.
+
+        Note that the
+        """
+        if not authorization_header:
+            return ''
+        return hashlib.sha224(authorization_header).digest()
+
+    @classmethod
+    def cache_key(cls, request):
+        """Create a a cache_key from a url and request headers.
+
+        Requests are generally stored by their URL.
+        For requests that have an Authorization header, we add a hash of that header to the cache key.
+        The hash is only used to make sure we allow caching for each user - it's not a security feature.
+        """
+        normalized_url = cls._urlnorm(request.url)
+        authorization_hash = cls._authorization_digest(request.headers.get('Authorization'))
+        return "{};{}".format(normalized_url, authorization_hash)
 
     def parse_cache_control(self, headers):
         """
@@ -90,8 +109,8 @@ class CacheController(object):
         Return a cached response if it exists in the cache, otherwise
         return False.
         """
-        cache_url = self.cache_url(request.url)
-        logger.debug('Looking up "%s" in the cache', cache_url)
+        cache_key = self.cache_key(request)
+        logger.debug('Looking up "%s" in the cache', cache_key)
         cc = self.parse_cache_control(request.headers)
 
         # Bail out if the request insists on fresh data
@@ -104,7 +123,7 @@ class CacheController(object):
             return False
 
         # Request allows serving from the cache, let's see if we find something
-        cache_data = self.cache.get(cache_url)
+        cache_data = self.cache.get(cache_key)
         if cache_data is None:
             logger.debug('No cache entry available')
             return False
@@ -135,7 +154,7 @@ class CacheController(object):
                 # Without date or etag, the cached response can never be used
                 # and should be deleted.
                 logger.debug('Purging cached response: no date or etag')
-                self.cache.delete(cache_url)
+                self.cache.delete(cache_key)
             logger.debug('Ignoring cached response: no date')
             return False
 
@@ -201,14 +220,14 @@ class CacheController(object):
             logger.debug(
                 'The cached response is "stale" with no etag, purging'
             )
-            self.cache.delete(cache_url)
+            self.cache.delete(cache_key)
 
         # return the original handler
         return False
 
     def conditional_headers(self, request):
-        cache_url = self.cache_url(request.url)
-        resp = self.serializer.loads(request, self.cache.get(cache_url))
+        cache_key = self.cache_key(request)
+        resp = self.serializer.loads(request, self.cache.get(cache_key))
         new_headers = {}
 
         if resp:
@@ -255,8 +274,8 @@ class CacheController(object):
         cc_req = self.parse_cache_control(request.headers)
         cc = self.parse_cache_control(response_headers)
 
-        cache_url = self.cache_url(request.url)
-        logger.debug('Updating cache with response from "%s"', cache_url)
+        cache_key = self.cache_key(request)
+        logger.debug('Updating cache with response from "%s"', cache_key)
 
         # Delete it from the cache if we happen to have it stored there
         no_store = False
@@ -266,15 +285,15 @@ class CacheController(object):
         if cc_req.get('no-store'):
             no_store = True
             logger.debug('Request header has "no-store"')
-        if no_store and self.cache.get(cache_url):
+        if no_store and self.cache.get(cache_key):
             logger.debug('Purging existing cache entry to honor "no-store"')
-            self.cache.delete(cache_url)
+            self.cache.delete(cache_key)
 
         # If we've been given an etag, then keep the response
         if self.cache_etags and 'etag' in response_headers:
             logger.debug('Caching due to etag')
             self.cache.set(
-                cache_url,
+                cache_key,
                 self.serializer.dumps(request, response, body=body),
             )
 
@@ -283,7 +302,7 @@ class CacheController(object):
         elif response.status == 301:
             logger.debug('Caching permanant redirect')
             self.cache.set(
-                cache_url,
+                cache_key,
                 self.serializer.dumps(request, response)
             )
 
@@ -296,7 +315,7 @@ class CacheController(object):
                 if cc['max-age'].isdigit() and int(cc['max-age']) > 0:
                     logger.debug('Caching b/c date exists and max-age > 0')
                     self.cache.set(
-                        cache_url,
+                        cache_key,
                         self.serializer.dumps(request, response, body=body),
                     )
 
@@ -306,7 +325,7 @@ class CacheController(object):
                 if response_headers['expires']:
                     logger.debug('Caching b/c of expires header')
                     self.cache.set(
-                        cache_url,
+                        cache_key,
                         self.serializer.dumps(request, response, body=body),
                     )
 
@@ -317,11 +336,11 @@ class CacheController(object):
         This should only ever be called when we've sent an ETag and
         gotten a 304 as the response.
         """
-        cache_url = self.cache_url(request.url)
+        cache_key = self.cache_key(request)
 
         cached_response = self.serializer.loads(
             request,
-            self.cache.get(cache_url)
+            self.cache.get(cache_key)
         )
 
         if not cached_response:
@@ -349,7 +368,7 @@ class CacheController(object):
 
         # update our cache
         self.cache.set(
-            cache_url,
+            cache_key,
             self.serializer.dumps(request, cached_response),
         )
 
