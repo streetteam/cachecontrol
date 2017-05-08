@@ -11,3 +11,5 @@ include
 docs/_build
 build/
 .tox
+.cache
+.coverage
