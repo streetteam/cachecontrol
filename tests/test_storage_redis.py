@@ -54,6 +54,22 @@ class TestRedisCacheGetSemantics(object):
         self.cache.set(combined_key, combined_value)
         assert self.cache.get(combined_key) == expected
 
+    @pytest.mark.parametrize("value_auth, value, expected_auth, expected", [
+        (None, None, None, None),
+        ('sensitive-data', None, b'sensitive-data', None),
+        (None, 'foo', b'foo', b'foo'),
+        ('sensitive-data', 'foo', b'foo', b'foo'),
+    ])
+    def test_get_set_matrix(self, value_auth, value, expected_auth, expected):
+        if value_auth is not None:
+            self.cache.set("url;auth-hash", value_auth)
+
+        if value is not None:
+            self.cache.set("url", value)
+
+        assert self.cache.get("url;auth-hash") == expected_auth
+        assert self.cache.get("url") == expected
+
 
 class TestRedisCacheDeleteSemantics(object):
     def setup(self):
